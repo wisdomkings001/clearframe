@@ -856,6 +856,23 @@ function parseTimeStr(str, fallback){
 function escapeHtml(s){ return s.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ---------- ffmpeg engine ----------
+async function buildInlineWorkerURL(version){
+  const base = `https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@${version}/dist/esm`;
+  const workerSrc = await (await fetch(`${base}/worker.js`)).text();
+  const importRe = /from\s+["']\.\/([\w.-]+)["'];?/g;
+  const deps = new Set();
+  let m;
+  while((m = importRe.exec(workerSrc))) deps.add(m[1]);
+  let depsCode = '';
+  for(const dep of deps){
+    let depSrc = await (await fetch(`${base}/${dep}`)).text();
+    depsCode += depSrc.replace(/export\s+/g, '') + '\n';
+  }
+  const mainCode = workerSrc.replace(/^import[^\n]*\n/gm, '').replace(/export\s+/g, '');
+  const combined = depsCode + '\n' + mainCode;
+  return URL.createObjectURL(new Blob([combined], {type:'text/javascript'}));
+}
+
 async function initFFmpeg(){
   ffmpeg = new FFmpeg();
   ffmpeg.on('log', ({message})=>log(message));
@@ -865,13 +882,16 @@ async function initFFmpeg(){
     progressLabel.innerHTML = `<span class="status-dot busy"></span>encoding… ${pct}%`;
   });
   try{
+    log('Preparing engine worker…');
     const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
-    const classWorkerURL = await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js', 'text/javascript');
+    const classWorkerURL = await buildInlineWorkerURL('0.12.10');
+    log('Downloading engine core (~30MB, one-time)…');
     await ffmpeg.load({
       coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
       wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
       classWorkerURL,
     });
+    log('Engine ready.');
     ffmpegReady = true;
     btnExport.disabled = !video.videoWidth;
     btnExport.textContent = 'Remove text & export';
